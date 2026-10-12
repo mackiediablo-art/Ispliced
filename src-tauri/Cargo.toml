@@ -1,5 +1,5 @@
 [package]
-name = "splicedd"
+name = "ispliced"
 version = "2.1.1"
 description = "A custom frontend for the Splice sample library"
 authors = ["ascpixi"]

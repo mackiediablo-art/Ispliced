@@ -7,7 +7,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { ReleaseNotes, UpdateInfo, disableUpdateChecks, installUpdate, opensReleasePage, skipUpdate } from "../../updater";
 
 /**
- * A dialog shown on startup when a newer release of Splicedd is available.
+ * A dialog shown on startup when a newer release of Ispliced is available.
  * Lets the user update in place, skip the offered version, dismiss the
  * dialog until the next launch, or turn off update checks altogether.
  */
@@ -81,7 +81,7 @@ export default function UpdateModal({ update, onDismiss }: {
                   Update available
                 </ModalHeading>
                 <p className="text-sm text-muted">
-                  Splicedd {update.version} is out. You're on {update.currentVersion}.
+                  Ispliced {update.version} is out. You're on {update.currentVersion}.
                 </p>
               </div>
             </ModalHeader>
@@ -93,7 +93,7 @@ export default function UpdateModal({ update, onDismiss }: {
 
               { opensReleasePage(update) &&
                 <p className="text-sm text-muted">
-                  Splicedd can't install this update automatically on your platform, so updating opens the release page in your browser to download and install manually.
+                  Ispliced can't install this update automatically on your platform, so updating opens the release page in your browser to download and install manually.
                 </p>
               }
 

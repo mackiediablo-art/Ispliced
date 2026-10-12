@@ -58,12 +58,12 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
         </ModalIcon>
         <div className="flex flex-col min-w-0">
           <ModalHeading className="text-base font-semibold tracking-tight">
-            { cfg().configured ? "Settings" : "Welcome to Splicedd" }
+            { cfg().configured ? "Settings" : "Welcome to Ispliced" }
           </ModalHeading>
           <p className="text-sm text-muted">
             { cfg().configured
-              ? "Adjust how Splicedd stores and downloads samples."
-              : "Tell Splicedd where to keep your samples and you're good to go." }
+              ? "Adjust how Ispliced stores and downloads samples."
+              : "Tell Ispliced where to keep your samples and you're good to go." }
           </p>
         </div>
       </ModalHeader>
@@ -123,7 +123,7 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
 
           <SettingRow
             title="Check for updates"
-            description="Ask to update when a new version of Splicedd is available."
+            description="Ask to update when a new version of Ispliced is available."
             control={
               <Switch
                 isSelected={ cfg().checkUpdates }

@@ -102,7 +102,7 @@ function pickInstaller(assets: GithubReleaseAsset[]) {
 }
 
 /**
- * Checks GitHub for a newer release of Splicedd. Returns `null` when we're
+ * Checks GitHub for a newer release of Ispliced. Returns `null` when we're
  * up to date, when update checks are disabled, or when the user chose to
  * skip the latest version.
  */
@@ -166,7 +166,7 @@ export function opensReleasePage(update: UpdateInfo) {
 
 /**
  * Installs the given update. On Windows this downloads the installer and
- * launches it, terminating Splicedd so it can be replaced. On every other
+ * launches it, terminating Ispliced so it can be replaced. On every other
  * platform (see `opensReleasePage`) it opens the release page in the browser.
  */
 // /src-tauri/src/updater.rs

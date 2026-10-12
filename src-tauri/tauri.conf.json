@@ -1,5 +1,5 @@
 {
-  "productName": "splicedd",
+  "productName": "Ispliced",
   "version": "2.1.1",
   "identifier": "dev.ascpixi.splicedd",
   "build": {
@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Splicedd",
+        "title": "Ispliced",
         "width": 1200,
         "height": 600,
         "minWidth": 980,

@@ -5,9 +5,11 @@ import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Modal,
 import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, MoveRight, Music2, Repeat, Search, Wrench, X } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cfg } from "../config";
-import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createSearchRequest } from "../splice/api";
+import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createSearchRequest, createPackSearchRequest } from "../splice/api";
 import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
 
+import { findMatchingPacks, readSearchResponse } from "../splice/packs";
+import PackCard from "./components/PackCard";
 import SampleListEntry from "./components/SampleListEntry";
 import SettingsModalContent from "./components/SettingsModalContent";
 import UpdateModal from "./components/UpdateModal";
@@ -85,12 +87,19 @@ function App() {
   const [bpm, setBpm] = useState<BpmFilter>();
   const [bpmOpen, setBpmOpen] = useState(false);
 
+  const [view, setView] = useState<"samples" | "packs">("samples");
   const [query, setQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [packs, setPacks] = useState<SpliceSamplePack[]>([]);
+  const searchSequence = useRef(0);
+  const [searchRevision, setSearchRevision] = useState(0);
+  const restoredPage = useRef<number | null>(null);
+  const randomSeed = useRef("");
+  const matchingPacksCache = useRef<{ key: string, packs: SpliceSamplePack[] } | null>(null);
 
   const [results, setResults] = useState<SpliceSample[]>([]);
   const resultContainer = useRef<HTMLDivElement | null>(null);
 
-  const [queryTimer, setQueryTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
 
   const [sortBy, setSortBy] = useState<SpliceSortBy>("popularity");
   const [sampleType, setSampleType] = useState<SpliceSampleType | "any">("any")
@@ -100,7 +109,7 @@ function App() {
 
   const [instruments, setInstruments] = useState(new Set<string>([]));
   const [genres, setGenres] = useState(new Set<string>([]));
-  let [tags, setTags] = useState<SpliceTag[]>([]);
+  const [tags, setTags] = useState<SpliceTag[]>([]);
 
   const [knownTags, setKnownTags] = useState<SpliceTag[]>([]);
   const [tagsExpanded, setTagsExpanded] = useState(false);
@@ -111,9 +120,10 @@ function App() {
   const [packFilter, setPackFilter] = useState<SpliceSamplePack | null>(null);
 
   const [totalPages, setTotalPages] = useState(0);
-  const [currentPage, setCurrentPage] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
 
   const [searchLoading, setSearchLoading] = useState(false);
+  const [searchProgress, setSearchProgress] = useState("");
   const [searchError, setSearchError] = useState<string | null>(null);
 
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -151,12 +161,24 @@ function App() {
     packFilter != null;
 
   useEffect(() => {
-    updateSearch(query);
-  }, [
-    sortBy, bpm, bpmType, sampleType,
-    instruments, genres, currentPage,
-    musicKey, chordType, packFilter
-  ]);
+    const timer = setTimeout(() => { setSearchQuery(query); setSearchRevision(value => value + 1); }, 250);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const previousCriteria = useRef("");
+  useEffect(() => {
+    const criteria = JSON.stringify([view, searchQuery, sortBy, bpm, bpmType, sampleType,
+      [...instruments], [...genres], tags, musicKey, chordType, packFilter?.uuid]);
+    const resetPage = previousCriteria.current !== criteria;
+    previousCriteria.current = criteria;
+    const restoring = restoredPage.current !== null;
+    const page = restoredPage.current ?? (resetPage ? 1 : currentPage);
+    restoredPage.current = null;
+    if (resetPage && !restoring) randomSeed.current = Math.floor(Math.random() * 10000000000).toString();
+    void updateSearch(searchQuery, page);
+    return () => { searchSequence.current++; };
+  }, [view, searchQuery, searchRevision, sortBy, bpm, bpmType, sampleType,
+    instruments, genres, tags, currentPage, musicKey, chordType, packFilter]);
 
   const [smplCancellation, smplSetCancellation] = useState<SamplePlaybackCancellation | null>(null);
   const pbCtx: SamplePlaybackContext = {
@@ -172,139 +194,169 @@ function App() {
     return () => window.removeEventListener("blur", stopOnBlur);
   }, [smplCancellation]);
 
-  function ensureContraintsGathered() {
-    if (knownInstruments.length == 0 || knownGenres.length == 0) {
-      updateSearch("");
-    }
-  }
-
   function changePage(n: number) {
     setCurrentPage(n);
     resultContainer.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" });
   }
 
   function handleSearchInput(ev: React.ChangeEvent<HTMLInputElement>) {
+    // Invalidate pending responses immediately, before the debounce runs.
+    searchSequence.current++;
+    setSearchLoading(true);
     setQuery(ev.target.value);
-
-    if (queryTimer != null) {
-      clearTimeout(queryTimer);
-    }
-
-    // We set a timer, as to not overload Splice with needless requests while the user is typing.
-    let selfTimer = setTimeout(() => updateSearch(ev.target.value, true), 250);
-    setQueryTimer(selfTimer);
   }
 
   function handleSearchKeyDown(ev: React.KeyboardEvent<HTMLInputElement>) {
-    if (ev.key == "Enter") {
-      updateSearch(query, true);
-    }
+    if (ev.key == "Enter") { setSearchQuery(query); setSearchRevision(value => value + 1); }
   }
 
   function toggleTag(tag: SpliceTag) {
-    tags = tags.some(x => x.uuid == tag.uuid)
-      ? tags.filter(x => x.uuid != tag.uuid)
-      : [...tags, tag];
-
-    setTags(tags);
-    updateSearch(query, true);
+    setTags(current => current.some(x => x.uuid == tag.uuid)
+      ? current.filter(x => x.uuid != tag.uuid) : [...current, tag]);
   }
 
   function handleTagClick(tag: SpliceTag) {
-    if (tags.some(x => x.uuid == tag.uuid)) {
-      return;
-    }
-
-    toggleTag(tag);
+    if (!tags.some(x => x.uuid == tag.uuid)) toggleTag(tag);
   }
+
+  const packSearch = useRef<{
+    query: string; sortBy: SpliceSortBy; bpm: BpmFilter | undefined;
+    bpmType: BpmFilterType; sampleType: SpliceSampleType | "any";
+    instruments: Set<string>; genres: Set<string>; tags: SpliceTag[];
+    musicKey: MusicKey | null; chordType: ChordType | null; page: number; randomSeed: string;
+  } | null>(null);
 
   function handlePackClick(pack: SpliceSamplePack) {
-    if (packFilter?.uuid == pack.uuid) {
-      return;
+    searchSequence.current++;
+    pbCtx.cancellation?.();
+    if (view === "packs") {
+      packSearch.current = { query, sortBy, bpm, bpmType, sampleType,
+        instruments, genres, tags, musicKey, chordType, page: currentPage, randomSeed: randomSeed.current };
     }
-
-    setPackFilter(pack);
-    setCurrentPage(1);
+    // A pack opens with every sample, rather than inheriting the discovery filters.
+    setQuery(""); setSearchQuery(""); setBpm(undefined); setMusicKey(null); setChordType(null);
+    setInstruments(new Set()); setGenres(new Set()); setTags([]); setSampleType("any");
+    setPackFilter(pack); setCurrentPage(1); setView("samples");
+    setResults([]); setTotalPages(0);
   }
 
-  async function updateSearch(newQuery: string, resetPage = false) {
-      const payload = createSearchRequest(newQuery);
-      payload.variables.sort = sortBy;
-      if (sortBy == "random") {
-        payload.variables.random_seed = Math.floor(Math.random() * 10000000000).toString();
-      }
+  function showPacks() {
+    if (view === "packs") return;
+    searchSequence.current++;
+    pbCtx.cancellation?.();
+    setPackFilter(null);
+    const saved = packSearch.current;
+    if (saved) {
+      setQuery(saved.query); setSearchQuery(saved.query); setSortBy(saved.sortBy);
+      setBpm(saved.bpm); setBpmType(saved.bpmType); setSampleType(saved.sampleType);
+      setInstruments(saved.instruments); setGenres(saved.genres); setTags(saved.tags);
+      setMusicKey(saved.musicKey); setChordType(saved.chordType);
+      restoredPage.current = saved.page;
+      randomSeed.current = saved.randomSeed;
+      setCurrentPage(saved.page);
+      packSearch.current = null;
+    }
+    setView("packs");
+  }
 
-      payload.variables.tags = tags.map(x => x.uuid);
+  async function updateSearch(newQuery: string, page: number) {
+    const sequence = ++searchSequence.current;
+    const isCurrent = () => sequence === searchSequence.current;
+    const payload = view === "packs" ? createPackSearchRequest(newQuery) : createSearchRequest(newQuery);
+    payload.variables.sort = sortBy;
+    if (sortBy == "random") {
+      payload.variables.random_seed = randomSeed.current;
+    }
 
-      if (bpmType == "exact") {
-        payload.variables.bpm = bpm?.bpm;
+    payload.variables.tags = tags.map(x => x.uuid);
+
+    if (bpmType == "exact") {
+      payload.variables.bpm = bpm?.bpm;
+    } else {
+      payload.variables.min_bpm = bpm?.minBpm;
+      payload.variables.max_bpm = bpm?.maxBpm;
+    }
+
+    if (sampleType != "any") {
+      payload.variables.asset_category_slug = sampleType;
+    }
+
+    payload.variables.tags.push(...instruments);
+    payload.variables.tags.push(...genres);
+
+    payload.variables.chord_type = chordType ?? undefined;
+    payload.variables.key = musicKey ?? undefined;
+
+    if (packFilter != null) {
+      payload.variables.parent_asset_uuid = packFilter.uuid;
+      payload.variables.parent_asset_type = "pack";
+    }
+
+    payload.variables.page = page;
+
+    setSearchLoading(true);
+    setSearchProgress("");
+    setSearchError(null);
+    try {
+      let data: SpliceSearchResponse<SpliceSample | SpliceSamplePack>["data"]["assetsSearch"];
+      if (view === "packs" && filtersActive) {
+        // The parent UUID is never a pack discovery constraint.
+        delete payload.variables.parent_asset_uuid;
+        delete payload.variables.parent_asset_type;
+        const cacheKey = JSON.stringify({ ...payload.variables, page: undefined });
+        let allPacks = matchingPacksCache.current?.key === cacheKey
+          ? matchingPacksCache.current.packs : null;
+        if (!allPacks) {
+          allPacks = await findMatchingPacks(payload, spliceSearch, isCurrent, (page, total) => {
+            if (isCurrent()) setSearchProgress(`Checking matching sounds: page ${page} of ${total}`);
+          });
+          if (!isCurrent()) return;
+          matchingPacksCache.current = { key: cacheKey, packs: allPacks };
+        }
+        const limit = payload.variables.limit;
+        setPacks(allPacks.slice((page - 1) * limit, page * limit));
+        setCurrentPage(page);
+        setTotalPages(Math.ceil(allPacks.length / limit));
+        // Use a sample request for filter options; pack attributes aren't audio attributes.
+        const facets = createSearchRequest("");
+        data = readSearchResponse(await spliceSearch(JSON.stringify(facets)));
       } else {
-        payload.variables.min_bpm = bpm?.minBpm;
-        payload.variables.max_bpm = bpm?.maxBpm;
+        const raw = await spliceSearch(JSON.stringify(payload));
+        data = view === "packs" ? readSearchResponse<SpliceSamplePack>(raw) : readSearchResponse<SpliceSample>(raw);
+        if (!isCurrent()) return;
+        if (view === "packs") setPacks(data.items as SpliceSamplePack[]);
+        else setResults(data.items as SpliceSample[]);
+        setCurrentPage(page);
+        setTotalPages(data.pagination_metadata.totalPages);
+        if (view === "packs") {
+          data = readSearchResponse(await spliceSearch(JSON.stringify(createSearchRequest(""))));
+        }
       }
-
-      if (sampleType != "any") {
-        payload.variables.asset_category_slug = sampleType;
-      }
-
-      payload.variables.tags.push(...instruments);
-      payload.variables.tags.push(...genres);
-
-      payload.variables.chord_type = chordType ?? undefined;
-      payload.variables.key = musicKey ?? undefined;
-
-      if (packFilter != null) {
-        payload.variables.parent_asset_uuid = packFilter.uuid;
-        payload.variables.parent_asset_type = "pack";
-      }
-
-      payload.variables.page = resetPage ? 1 : currentPage;
-
-      setSearchLoading(true);
-
-      let raw: string;
-      try {
-        // Routed through the hidden splice.com helper webview so the request clears
-        // Cloudflare Bot Management (which blocks non-browser TLS fingerprints) and
-        // Splice's CORS. A direct browser fetch from our own origin can't do this
-        // without disabling web security, which breaks Tauri v2 IPC.
-        raw = await spliceSearch(JSON.stringify(payload));
-        setSearchError(null);
-      } catch (err) {
-        setSearchError(err instanceof Error ? err.message : String(err));
-        return;
-      } finally {
-        setSearchLoading(false);
-      }
-
-      pbCtx.cancellation?.(); // stop any sample that's currently playing
-
-      const respData: SpliceSearchResponse = JSON.parse(raw);
-      const data = respData.data.assetsSearch;
-
-      setResults(data.items);
-
-      setCurrentPage(resetPage ? 1 : data.pagination_metadata.currentPage);
-      setTotalPages(data.pagination_metadata.totalPages);
+      if (!isCurrent()) return;
+      pbCtx.cancellation?.();
 
       function findConstraints(name: "Genre" | "Instrument") {
         return data.tag_summary.map(x => x.tag)
           .filter(x => x.taxonomy.name == name)
           .map(x => ({ name: x.label, uuid: x.uuid }));
       }
-
       setKnownGenres(findConstraints("Genre"));
       setKnownInstruments(findConstraints("Instrument"));
-
       const seenTags = new Set<string>();
       setKnownTags(
-        [...data.tag_summary]
-          .sort((a, b) => b.count - a.count)
-          .map(x => x.tag)
+        [...data.tag_summary].sort((a, b) => b.count - a.count).map(x => x.tag)
           .filter(x => !seenTags.has(x.uuid) && (seenTags.add(x.uuid), true))
           .map(x => ({ uuid: x.uuid, label: x.label }))
       );
+    } catch (err) {
+      if (isCurrent()) setSearchError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (isCurrent()) setSearchLoading(false);
+    }
   }
+
+  const showResults = view === "packs" || query.length > 0 || filtersActive;
+  const resultCount = view === "packs" ? packs.length : results.length;
 
   return (
     <main className="flex flex-col gap-2 h-screen p-6">
@@ -323,6 +375,17 @@ function App() {
         <UpdateModal update={update} onDismiss={() => setUpdate(null)} />
       }
 
+      <div className="flex items-center justify-between gap-4 mb-2">
+        <h1 className="text-xl font-semibold">Ispliced</h1>
+        <nav aria-label="Browse library" className="flex gap-2">
+          <Button variant={view === "samples" ? "primary" : "outline"}
+            aria-current={view === "samples" ? "page" : undefined}
+            onClick={() => { if (view === "samples") return; searchSequence.current++; pbCtx.cancellation?.(); setView("samples"); }}>Samples</Button>
+          <Button variant={view === "packs" ? "primary" : "outline"}
+            aria-current={view === "packs" ? "page" : undefined} onClick={showPacks}>Sample packs</Button>
+        </nav>
+      </div>
+
       <div className="flex gap-2">
         <InputGroup className="flex-1">
           <InputGroupPrefix>
@@ -330,15 +393,14 @@ function App() {
           </InputGroupPrefix>
           <InputGroupInput
             type="text"
-            aria-label="Search for samples"
-            placeholder="Search for samples..."
+            aria-label={view === "packs" ? "Search for sample packs" : "Search for samples"}
+            placeholder={view === "packs" ? "Search for sample packs..." : "Search for samples..."}
             value={query}
             onKeyDown={handleSearchKeyDown}
             onChange={handleSearchInput}
           />
-          { /* With no query or filters, a search only fetches the filter options
-               in the background (results aren't shown), so don't show a spinner */ }
-          { searchLoading && (query.length > 0 || filtersActive) &&
+          { /* Only show loading for searches whose results are displayed. */ }
+          { searchLoading && showResults &&
             <InputGroupSuffix>
               <ProgressCircle aria-label="Loading results..." isIndeterminate className="size-5">
                 <ProgressCircleTrack>
@@ -371,11 +433,19 @@ function App() {
           </SelectPopover>
         </Select>
 
+        {(query || tags.length || instruments.size || genres.size || musicKey || chordType || bpm || sampleType !== "any") &&
+          <Button variant="outline" onClick={() => {
+            setQuery(""); setSearchQuery(""); setSearchRevision(value => value + 1);
+            setTags([]); setInstruments(new Set()); setGenres(new Set());
+            setMusicKey(null); setChordType(null); setBpm(undefined); setSampleType("any");
+          }}>Clear search</Button>}
         <Button isIconOnly variant="outline" className={FIELD_BUTTON_CLASSES} aria-label="Settings" onClick={settings.open}>
           <Wrench className="size-4" />
         </Button>
       </div>
 
+      {view === "packs" && <p className="text-sm text-muted">Browse packs by name. Audio filters find packs containing matching samples.</p>}
+      {view === "packs" && searchLoading && searchProgress && <p role="status" className="text-sm text-muted">{searchProgress}</p>}
       <div className="flex gap-2">
         <Select aria-label="Instruments"
           selectionMode="multiple"
@@ -385,7 +455,7 @@ function App() {
           className="flex-1 min-w-0"
           fullWidth
         >
-          <SelectTrigger onPress={ensureContraintsGathered} className="max-w-full">
+          <SelectTrigger className="max-w-full">
             <Guitar className="size-4 me-2 self-center shrink-0 text-muted" />
             <SelectValue className="truncate" />
             <SelectIndicator />
@@ -405,7 +475,7 @@ function App() {
           className="flex-1 min-w-0"
           fullWidth
         >
-          <SelectTrigger onPress={ensureContraintsGathered} className="max-w-full">
+          <SelectTrigger className="max-w-full">
             <Disc3 className="size-4 me-2 self-center shrink-0 text-muted" />
             <SelectValue className="truncate" />
             <SelectIndicator />
@@ -503,7 +573,7 @@ function App() {
         </Select>
       </div>
 
-      { (query.length > 0 || filtersActive) && knownTags.length > 0 &&
+      { showResults && knownTags.length > 0 &&
         <div className="flex items-start gap-2">
           { /* Selected tags are pinned to the front; the rest follow, most popular first. */ }
           <div className={`flex-1 min-w-0 flex flex-wrap gap-1.5 ${tagsExpanded ? "" : "h-9 md:h-8 overflow-hidden"}`}>
@@ -538,11 +608,12 @@ function App() {
 
           <div className="flex-1 min-w-0 flex flex-col">
             <span className="text-xs text-muted">
-              Filtering by pack
+              Samples in this pack
             </span>
             <span className="truncate font-medium">{packFilter.name}</span>
           </div>
 
+          {packSearch.current && <Button size="sm" variant="outline" onClick={showPacks}>Back to packs</Button>}
           <button
             type="button"
             aria-label={`Stop filtering by ${packFilter.name}`}
@@ -580,19 +651,19 @@ function App() {
               <p className="text-sm text-muted/75 max-w-xl">{searchError}</p>
             </div>
           </div>
-        : (query.length > 0 || filtersActive)
-        ? results.length == 0
+        : showResults
+        ? resultCount == 0
         ? <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-8">
             <img className="w-12 select-none" src="img/blob-think.png" alt="" draggable={false} />
-            <p className="text-muted">Couldn't find anything. Try changing your query and filters.</p>
+            <p className="text-muted">{searchLoading ? "Searching…" : "Couldn't find anything. Try changing your query and filters."}</p>
           </div>
-        : <div ref={resultContainer}
+        : <div ref={resultContainer} aria-label={view === "packs" ? "Sample packs" : "Sample results"} aria-busy={searchLoading}
             className="flex-1 min-h-0 mt-2 overflow-y-auto scrollbar-thin shadow-md bg-surface p-6 rounded-3xl flex flex-col gap-6"
         >
-              <div className={`flex-1 flex flex-col transition-opacity duration-150
+              <div className={`flex-1 ${view === "packs" ? "grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-5 content-start" : "flex flex-col"} transition-opacity duration-150
                               ${searchLoading ? "opacity-50 pointer-events-none" : ""}`}
               >
-              { results.map(
+              { view === "packs" ? packs.map(pack => <PackCard key={pack.uuid} pack={pack} onOpen={handlePackClick} />) : results.map(
                 x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} onPackClick={handlePackClick} ctx={pbCtx}/>
               ) }
               </div>
