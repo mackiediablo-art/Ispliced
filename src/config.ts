@@ -4,9 +4,9 @@ import { useState } from "react";
 import { IN_TAURI } from "./native";
 
 /**
- * Represents the user configuration file of Splicedd.
+ * Represents the user configuration file of Ispliced.
  */
-export interface SpliceddConfig {
+export interface IsplicedConfig {
   sampleDir: string;
   placeholders: boolean;
 
@@ -21,10 +21,10 @@ export interface SpliceddConfig {
   configured: boolean;
 }
 
-let globalCfg: SpliceddConfig;
+let globalCfg: IsplicedConfig;
 let saveQueue: Promise<void> = Promise.resolve();
 
-function defaultCfg(): SpliceddConfig {
+function defaultCfg(): IsplicedConfig {
   return {
     sampleDir: "",
     darkMode: true,
@@ -39,14 +39,14 @@ function defaultCfg(): SpliceddConfig {
 /**
  * Returns the global configuration object. The returned object should be treated as immutable.
  */
-export function cfg(): SpliceddConfig {
+export function cfg(): IsplicedConfig {
   return globalCfg;
 }
 
 /**
  * Changes select values of the user configuration and saves it to the config file.
  */
-export async function mutateCfg(values: Partial<SpliceddConfig>) {
+export async function mutateCfg(values: Partial<IsplicedConfig>) {
   globalCfg = { ...globalCfg, ...values }
   await saveConfig();
 }
@@ -104,7 +104,7 @@ export async function saveConfig() {
  * Represents the synchronized state between a React component and the configuration object.
  */
 interface ConfigSyncedState<T> {
-  key: keyof SpliceddConfig;
+  key: keyof IsplicedConfig;
   state: T;
   setState: React.Dispatch<React.SetStateAction<T>>
 }
@@ -112,7 +112,7 @@ interface ConfigSyncedState<T> {
 /**
  * Allows for synchronization between React components and a single key-value pair of the configuration object.
  */
-export function useCfgSyncedState<T>(key: keyof SpliceddConfig) {
+export function useCfgSyncedState<T>(key: keyof IsplicedConfig) {
   const [state, setState] = useState<T>(globalCfg[key] as T);
   return { key, state, setState }
 }

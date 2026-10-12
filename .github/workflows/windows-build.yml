@@ -1,0 +1,39 @@
+name: Windows executable
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Yarn Classic
+        run: npm install --global yarn@1.22.22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile --non-interactive
+      # Hosted runners use their installed Visual Studio C++ toolchain. The local
+      # build:windows launcher selects the user's Visual Studio 2026 explicitly.
+      - name: Build application and executable installer
+        run: yarn tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis
+      - name: Upload application executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ispliced-windows-x64-exe
+          if-no-files-found: error
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/ispliced.exe
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ispliced-windows-x64-installer
+          if-no-files-found: error
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe

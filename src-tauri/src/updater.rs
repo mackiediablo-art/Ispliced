@@ -20,7 +20,7 @@ pub async fn fetch_releases() -> Result<serde_json::Value, String> {
     let resp = reqwest::Client::new()
         .get(RELEASES_API_URL)
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "splicedd")
+        .header("User-Agent", "ispliced")
         .send().await
         .map_err(|e| format!("Failed to contact GitHub: {e}"))?;
 
@@ -59,7 +59,7 @@ pub async fn install_update(app: AppHandle, url: String) -> Result<(), String> {
 
     let mut resp = reqwest::Client::new()
         .get(&url)
-        .header("User-Agent", "splicedd")
+        .header("User-Agent", "ispliced")
         .send().await
         .map_err(|e| format!("Failed to start the download: {e}"))?;
 

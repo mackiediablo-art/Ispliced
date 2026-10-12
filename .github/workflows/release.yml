@@ -2,7 +2,7 @@ name: Release
 
 # Releases are cut by "milestone" commits on master. Push a commit whose
 # message starts with `milestone:` and matches the version in package.json,
-# e.g. `milestone: Splicedd v2.0.0`, and this workflow builds every platform,
+# e.g. `milestone: Ispliced v2.0.0`, and this workflow builds every platform,
 # attaches GitHub build-provenance attestations, and opens a *draft* release
 # for you to write the changelog and publish manually.
 on:
@@ -137,10 +137,10 @@ jobs:
           # Anchor on the per-job artifact dirs (bundles-<matrix.id>); upload-artifact
           # strips the target-triple prefix, so match by extension, not inner dirs.
           shopt -s globstar nullglob
-          collect "staging/bundles-windows-x64/**/*-setup.exe"  "Splicedd-$VERSION-windows-x64-setup.exe"
-          collect "staging/bundles-macos-arm64/**/*.dmg"        "Splicedd-$VERSION-macos-arm64.dmg"
-          collect "staging/bundles-linux-x64/**/*.AppImage"     "Splicedd-$VERSION-linux-x86_64.AppImage"
-          collect "staging/bundles-linux-x64/**/*.deb"          "Splicedd-$VERSION-linux-x86_64.deb"
+          collect "staging/bundles-windows-x64/**/*-setup.exe"  "Ispliced-$VERSION-windows-x64-setup.exe"
+          collect "staging/bundles-macos-arm64/**/*.dmg"        "Ispliced-$VERSION-macos-arm64.dmg"
+          collect "staging/bundles-linux-x64/**/*.AppImage"     "Ispliced-$VERSION-linux-x86_64.AppImage"
+          collect "staging/bundles-linux-x64/**/*.deb"          "Ispliced-$VERSION-linux-x86_64.deb"
           echo "Assets to publish:"
           ls -la release
 
@@ -156,7 +156,7 @@ jobs:
         with:
           tag_name: ${{ needs.gate.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: Splicedd ${{ needs.gate.outputs.tag }}
+          name: Ispliced ${{ needs.gate.outputs.tag }}
           draft: true # write the changelog in the UI, then publish
           generate_release_notes: true # pre-fills an editable PR list
           files: release/*

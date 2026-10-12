@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for Splicedd",
+  "description": "Default capabilities for Ispliced",
   "windows": ["main"],
   "permissions": [
     "core:default",

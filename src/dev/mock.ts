@@ -1,4 +1,4 @@
-import { SpliceSample, SpliceSearchResponse } from "../splice/api";
+import { SpliceSample, SpliceSamplePack, SpliceSearchResponse } from "../splice/api";
 import { ChordType, MusicKey, SpliceTag } from "../splice/entities";
 
 // Mock search data, used only when the app runs outside of the Tauri shell
@@ -34,10 +34,10 @@ function mockWaveformUrl(seed: number, kind: "loop" | "decay") {
   return "data:application/json," + encodeURIComponent(JSON.stringify(points));
 }
 
-const PACKS = [
-  { uuid: "pack-1", name: "Neon Nights - Synthwave Essentials", permalink_base_url: "mock" },
-  { uuid: "pack-2", name: "Concrete Jungle Drums", permalink_base_url: "mock" },
-  { uuid: "pack-3", name: "Velvet Keys & Chords", permalink_base_url: "mock" },
+const PACKS: SpliceSamplePack[] = [
+  { uuid: "pack-1", name: "Neon Nights - Synthwave Essentials", permalink_base_url: "mock", files: [{ path: "", asset_file_type_slug: "cover_image", url: "/img/mock-neon.svg" }] },
+  { uuid: "pack-2", name: "Concrete Jungle Drums", permalink_base_url: "mock", files: [{ path: "", asset_file_type_slug: "cover_image", url: "/img/mock-drums.svg" }] },
+  { uuid: "pack-3", name: "Velvet Keys & Chords", permalink_base_url: "mock", files: [{ path: "", asset_file_type_slug: "cover_image", url: "/img/mock-keys.svg" }] },
 ];
 
 function mockSample(
@@ -59,12 +59,7 @@ function mockSample(
       { name: "preview", path: "", asset_file_type_slug: "preview_mp3", url: "data:audio/mpeg," },
     ],
     parents: {
-      items: [{
-        uuid: pack.uuid,
-        name: pack.name,
-        permalink_base_url: pack.permalink_base_url,
-        files: [{ path: "", asset_file_type_slug: "cover_image", url: "img/missing-cover.png" }]
-      }]
+      items: [pack]
     },
     bpm: opts.bpm,
     chord_type: opts.chord,
@@ -101,32 +96,53 @@ const SAMPLES: SpliceSample[] = [
 /** Returns a canned response mimicking what the Splice search endpoint would return. */
 export function mockSearch(body: string): string {
   const payload = JSON.parse(body);
-  const query: string = payload.variables.filepath ?? "";
-  const parentUuid: string | undefined = payload.variables.parent_asset_uuid;
+  const variables = payload.variables;
+  const packSearch = payload.operationName === "PacksSearch";
+  const query: string = (packSearch ? variables.query : variables.filepath) ?? "";
+  const matchingSamples = SAMPLES
+    .filter(sample => packSearch || sample.name.toLowerCase().includes(query.toLowerCase()))
+    .filter(sample => !variables.parent_asset_uuid || sample.parents.items.some(pack => pack.uuid === variables.parent_asset_uuid))
+    .filter(sample => !variables.key || sample.key === variables.key)
+    .filter(sample => !variables.chord_type || sample.chord_type === variables.chord_type)
+    .filter(sample => !variables.asset_category_slug || sample.asset_category_slug === variables.asset_category_slug)
+    .filter(sample => !variables.bpm || sample.bpm === Number(variables.bpm))
+    .filter(sample => variables.min_bpm == null || (sample.bpm != null && sample.bpm >= variables.min_bpm))
+    .filter(sample => variables.max_bpm == null || (sample.bpm != null && sample.bpm <= variables.max_bpm))
+    .filter(sample => (variables.tags ?? []).every((tag: string) => sample.tags.some(item => item.uuid === tag)));
 
-  const items = SAMPLES
-    .filter(x => x.name.toLowerCase().includes(query.toLowerCase()))
-    .filter(x => parentUuid == null || x.parents.items[0]?.uuid == parentUuid);
-
-  const response: SpliceSearchResponse = {
+  let items: (SpliceSample | SpliceSamplePack)[] = packSearch
+    ? PACKS.filter(pack => pack.name.toLowerCase().includes(query.toLowerCase())) : matchingSamples;
+  if (variables.sort === "recency") items = [...items].reverse();
+  if (variables.sort === "random") {
+    // Stable per seed so pagination uses the same order.
+    const seed = Number(variables.random_seed ?? 0);
+    const rank = (uuid: string) => [...uuid].reduce((value, char) => (value * 31 + char.charCodeAt(0)) % 2147483647, seed);
+    items = [...items].sort((a, b) => rank(a.uuid) - rank(b.uuid));
+  }
+  const limit = variables.limit ?? 50;
+  const page = Math.max(1, variables.page ?? 1);
+  const response: SpliceSearchResponse<SpliceSample | SpliceSamplePack> = {
     data: {
       assetsSearch: {
-        items,
+        items: items.slice((page - 1) * limit, page * limit),
         tag_summary: [
-          ...["Drums", "Synth", "Guitar", "Vocals"].map((label, i) => ({
-            tag: { uuid: `instr-${i}`, label, taxonomy: { uuid: "tx-instr", name: "Instrument" as const } },
-            count: 10 - i
+          ...["drums", "synth", "guitar", "vocal"].map(label => ({
+            tag: { ...TAGS[label], taxonomy: { uuid: "tx-instr", name: "Instrument" as const } },
+            count: SAMPLES.filter(sample => sample.tags.some(tag => tag.uuid === TAGS[label].uuid)).length
           })),
-          ...["Trap", "House", "Lo-Fi", "Techno"].map((label, i) => ({
-            tag: { uuid: `genre-${i}`, label, taxonomy: { uuid: "tx-genre", name: "Genre" as const } },
-            count: 10 - i
+          ...["trap", "house", "lo-fi", "techno"].map(label => ({
+            tag: { ...TAGS[label], taxonomy: { uuid: "tx-genre", name: "Genre" as const } },
+            count: SAMPLES.filter(sample => sample.tags.some(tag => tag.uuid === TAGS[label].uuid)).length
+          })),
+          ...["kick", "snare", "bass", "melodic", "dry", "wet", "percussion", "fx"].map(label => ({
+            tag: { ...TAGS[label], taxonomy: { uuid: "tx-attribute", name: "Functional Attribute" as const } },
+            count: SAMPLES.filter(sample => sample.tags.some(tag => tag.uuid === TAGS[label].uuid)).length
           }))
         ],
         response_metadata: { records: items.length },
-        pagination_metadata: { currentPage: payload.variables.page ?? 1, totalPages: 3 }
+        pagination_metadata: { currentPage: page, totalPages: Math.ceil(items.length / limit) }
       }
     }
   };
-
   return JSON.stringify(response);
 }

@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
-import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
+import { checkDirExists, checkFileExists, createPlaceholder, IN_TAURI, IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
 import { join } from "@tauri-apps/api/path";
 
 import { cfg } from "../../config";
@@ -56,6 +56,7 @@ export default function SampleListEntry(
 
   const fetchAhead = useRef<Promise<Response> | null>(null);
   function startFetching() {
+    if (!IN_TAURI) return; // Browser fixtures contain no playable preview audio.
     if (fetchAhead.current != null)
       return;
 
@@ -107,6 +108,7 @@ export default function SampleListEntry(
   }
 
   async function handlePlayClick() {
+    if (!IN_TAURI) return;
     ctx.cancellation?.();
 
     if (playing)
@@ -126,6 +128,7 @@ export default function SampleListEntry(
   }
 
   async function handleSeek(target: number) {
+    if (!IN_TAURI) return;
     if (!playing) {
       ctx.cancellation?.();
 
@@ -163,6 +166,7 @@ export default function SampleListEntry(
   const sanitizePath = (x: string) => x.replace(/[<>:"|?* ]/g, "_");
 
   async function handleDrag(ev: React.MouseEvent<HTMLDivElement, MouseEvent>) {
+    if (!IN_TAURI) return;
     // Verify that the parent of the element that we began the dragging from
     // is not explicitly marked as non-draggable (as it may be clicked etc.)
     const dragOrigin = document.elementFromPoint(ev.clientX, ev.clientY)?.parentElement;

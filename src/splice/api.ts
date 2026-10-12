@@ -41,6 +41,7 @@ export interface SpliceSearchRequest extends SpliceRequest<{
   max_bpm?: number,
   min_bpm?: number,
   filepath: string,
+  query?: string,
   limit: number,
   order: "DESC",
   sort: SpliceSortBy,
@@ -56,10 +57,10 @@ export interface SpliceSearchRequest extends SpliceRequest<{
   parent_asset_type?: "pack"
 }>{}
 
-export type SpliceSearchResponse = {
+export type SpliceSearchResponse<T = SpliceSample> = {
   data: {
     assetsSearch: {
-      items: SpliceSample[],
+      items: T[],
       tag_summary: {
         tag: {
           uuid: string,
@@ -114,4 +115,15 @@ export type SpliceSamplePack = {
     asset_file_type_slug: "cover_image" | "banner_image" | "demo_mp3" | "preview_mp3",
     url: string
   }[]
+}
+
+/** Pack names use the text query; audio attributes are searched on child samples. */
+export function createPackSearchRequest(query: string): SpliceSearchRequest {
+  const request = createSearchRequest("");
+  request.operationName = "PacksSearch";
+  request.query = request.query
+    .replace(/SamplesSearch/g, "PacksSearch")
+    .replace("asset_type_slug: sample,", "asset_type_slug: pack,");
+  request.variables.query = query;
+  return request;
 }
