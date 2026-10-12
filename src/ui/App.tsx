@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { Alert, AlertContent, AlertDescription, AlertIndicator, AlertTitle, Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, ToggleButton, useOverlayState } from "@heroui/react";
 import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Modal, Popover, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
-import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, MoveRight, Music2, Repeat, Search, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, MoveRight, Music2, Repeat, Search, Wrench, X } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cfg } from "../config";
 import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createSearchRequest, createPackSearchRequest } from "../splice/api";
 import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
 
-import { findMatchingPacks, readSearchResponse } from "../splice/packs";
+import { findMatchingPacks, PackSearchCache, readSearchResponse } from "../splice/packs";
+import { NavigationHistory } from "./history";
 import PackCard from "./components/PackCard";
 import SampleListEntry from "./components/SampleListEntry";
 import SettingsModalContent from "./components/SettingsModalContent";
@@ -78,6 +79,19 @@ function buildPageList(current: number, total: number): (number | "ellipsis")[] 
   return pages;
 }
 
+interface PackSearchState {
+  query: string; sortBy: SpliceSortBy; bpm: BpmFilter | undefined;
+  bpmType: BpmFilterType; sampleType: SpliceSampleType | "any";
+  instruments: Set<string>; genres: Set<string>; tags: SpliceTag[];
+  musicKey: MusicKey | null; chordType: ChordType | null; page: number; randomSeed: string;
+}
+interface BrowseSnapshot extends PackSearchState {
+  view: "samples" | "packs";
+  packFilter: SpliceSamplePack | null;
+  scrollTop: number;
+  returnToPacks: PackSearchState | null;
+}
+
 function App() {
   const settings = useOverlayState({
     defaultOpen: !cfg().configured
@@ -95,7 +109,14 @@ function App() {
   const [searchRevision, setSearchRevision] = useState(0);
   const restoredPage = useRef<number | null>(null);
   const randomSeed = useRef("");
-  const matchingPacksCache = useRef<{ key: string, packs: SpliceSamplePack[] } | null>(null);
+  const matchingPacksCache = useRef<PackSearchCache>(new Map());
+  const responseCache = useRef(new Map<string, string>());
+  const pendingRequests = useRef(new Map<string, Promise<string>>());
+  const facetsCache = useRef<SpliceSearchResponse["data"]["assetsSearch"] | null>(null);
+  const navigation = useRef(new NavigationHistory<BrowseSnapshot>());
+  const [, refreshNavigation] = useState(0);
+  const restoringHistory = useRef(false);
+  const pendingScroll = useRef<number | null>(null);
 
   const [results, setResults] = useState<SpliceSample[]>([]);
   const resultContainer = useRef<HTMLDivElement | null>(null);
@@ -123,7 +144,6 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
 
   const [searchLoading, setSearchLoading] = useState(false);
-  const [searchProgress, setSearchProgress] = useState("");
   const [searchError, setSearchError] = useState<string | null>(null);
 
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -175,6 +195,18 @@ function App() {
     const page = restoredPage.current ?? (resetPage ? 1 : currentPage);
     restoredPage.current = null;
     if (resetPage && !restoring) randomSeed.current = Math.floor(Math.random() * 10000000000).toString();
+    if (restoringHistory.current) {
+      restoringHistory.current = false;
+    } else {
+      const previous = navigation.current.current;
+      if (previous) navigation.current.update({ ...previous, scrollTop: resultContainer.current?.scrollTop ?? previous.scrollTop });
+      const snapshot = captureBrowseState(page);
+      if (navigation.current.push(JSON.stringify([criteria, page]), snapshot)) {
+        pendingScroll.current = 0;
+        refreshNavigation(value => value + 1);
+      }
+    }
+    setCurrentPage(page);
     void updateSearch(searchQuery, page);
     return () => { searchSequence.current++; };
   }, [view, searchQuery, searchRevision, sortBy, bpm, bpmType, sampleType,
@@ -219,14 +251,77 @@ function App() {
     if (!tags.some(x => x.uuid == tag.uuid)) toggleTag(tag);
   }
 
-  const packSearch = useRef<{
-    query: string; sortBy: SpliceSortBy; bpm: BpmFilter | undefined;
-    bpmType: BpmFilterType; sampleType: SpliceSampleType | "any";
-    instruments: Set<string>; genres: Set<string>; tags: SpliceTag[];
-    musicKey: MusicKey | null; chordType: ChordType | null; page: number; randomSeed: string;
-  } | null>(null);
+  const packSearch = useRef<PackSearchState | null>(null);
+
+  function captureBrowseState(page = currentPage): BrowseSnapshot {
+    return { view, query: searchQuery, sortBy, bpm, bpmType, sampleType,
+      instruments, genres, tags, musicKey, chordType, page,
+      randomSeed: randomSeed.current, packFilter, scrollTop: 0, returnToPacks: packSearch.current };
+  }
+
+  function saveBrowseBeforeNavigation() {
+    // Capture typed input too: a user can open a result before its debounce fires.
+    const criteria = JSON.stringify([view, query, sortBy, bpm, bpmType, sampleType,
+      [...instruments], [...genres], tags, musicKey, chordType, packFilter?.uuid]);
+    const snapshot = { ...captureBrowseState(), query, scrollTop: resultContainer.current?.scrollTop ?? 0 };
+    if (!navigation.current.push(JSON.stringify([criteria, currentPage]), snapshot)) navigation.current.update(snapshot);
+    refreshNavigation(value => value + 1);
+  }
+
+  function rememberScroll() {
+    const previous = navigation.current.current;
+    if (previous && resultContainer.current) {
+      navigation.current.update({ ...previous, scrollTop: resultContainer.current.scrollTop });
+    }
+  }
+
+  function navigateHistory(direction: -1 | 1) {
+    const history = navigation.current;
+    const previous = history.current;
+    if (previous) history.update({ ...previous, scrollTop: resultContainer.current?.scrollTop ?? previous.scrollTop });
+    const saved = history.move(direction);
+    if (!saved) return;
+    searchSequence.current++;
+    pbCtx.cancellation?.();
+    restoringHistory.current = true;
+    restoredPage.current = saved.page;
+    pendingScroll.current = saved.scrollTop;
+    randomSeed.current = saved.randomSeed;
+    packSearch.current = saved.returnToPacks;
+    setView(saved.view); setQuery(saved.query); setSearchQuery(saved.query);
+    setSortBy(saved.sortBy); setBpm(saved.bpm); setBpmType(saved.bpmType);
+    setSampleType(saved.sampleType); setInstruments(saved.instruments); setGenres(saved.genres);
+    setTags(saved.tags); setMusicKey(saved.musicKey); setChordType(saved.chordType);
+    setPackFilter(saved.packFilter); setCurrentPage(saved.page);
+    setSearchRevision(value => value + 1);
+    refreshNavigation(value => value + 1);
+  }
+
+  useLayoutEffect(() => {
+    if (!searchLoading && pendingScroll.current !== null && resultContainer.current) {
+      resultContainer.current.scrollTop = pendingScroll.current;
+      pendingScroll.current = null;
+    }
+  }, [results, packs, searchLoading]);
+
+  async function cachedSearch(body: string): Promise<string> {
+    const cached = responseCache.current.get(body);
+    if (cached) return cached;
+    let pending = pendingRequests.current.get(body);
+    if (!pending) {
+      pending = spliceSearch(body).then(raw => {
+        readSearchResponse(raw); // Don't retain failed GraphQL responses.
+        responseCache.current.set(body, raw);
+        if (responseCache.current.size > 64) responseCache.current.delete(responseCache.current.keys().next().value!);
+        return raw;
+      }).finally(() => pendingRequests.current.delete(body));
+      pendingRequests.current.set(body, pending);
+    }
+    return pending;
+  }
 
   function handlePackClick(pack: SpliceSamplePack) {
+    saveBrowseBeforeNavigation();
     searchSequence.current++;
     pbCtx.cancellation?.();
     if (view === "packs") {
@@ -242,6 +337,7 @@ function App() {
 
   function showPacks() {
     if (view === "packs") return;
+    saveBrowseBeforeNavigation();
     searchSequence.current++;
     pbCtx.cancellation?.();
     setPackFilter(null);
@@ -295,41 +391,28 @@ function App() {
     payload.variables.page = page;
 
     setSearchLoading(true);
-    setSearchProgress("");
     setSearchError(null);
     try {
       let data: SpliceSearchResponse<SpliceSample | SpliceSamplePack>["data"]["assetsSearch"];
       if (view === "packs" && filtersActive) {
-        // The parent UUID is never a pack discovery constraint.
-        delete payload.variables.parent_asset_uuid;
-        delete payload.variables.parent_asset_type;
-        const cacheKey = JSON.stringify({ ...payload.variables, page: undefined });
-        let allPacks = matchingPacksCache.current?.key === cacheKey
-          ? matchingPacksCache.current.packs : null;
-        if (!allPacks) {
-          allPacks = await findMatchingPacks(payload, spliceSearch, isCurrent, (page, total) => {
-            if (isCurrent()) setSearchProgress(`Checking matching sounds: page ${page} of ${total}`);
-          });
-          if (!isCurrent()) return;
-          matchingPacksCache.current = { key: cacheKey, packs: allPacks };
-        }
-        const limit = payload.variables.limit;
-        setPacks(allPacks.slice((page - 1) * limit, page * limit));
-        setCurrentPage(page);
-        setTotalPages(Math.ceil(allPacks.length / limit));
-        // Use a sample request for filter options; pack attributes aren't audio attributes.
-        const facets = createSearchRequest("");
-        data = readSearchResponse(await spliceSearch(JSON.stringify(facets)));
+        const matching = await findMatchingPacks(payload, cachedSearch, isCurrent, matchingPacksCache.current);
+        if (!matching || !isCurrent()) return;
+        data = matching;
+        setPacks(matching.items);
+        setTotalPages(matching.pagination_metadata.totalPages);
       } else {
-        const raw = await spliceSearch(JSON.stringify(payload));
+        const raw = await cachedSearch(JSON.stringify(payload));
         data = view === "packs" ? readSearchResponse<SpliceSamplePack>(raw) : readSearchResponse<SpliceSample>(raw);
         if (!isCurrent()) return;
         if (view === "packs") setPacks(data.items as SpliceSamplePack[]);
         else setResults(data.items as SpliceSample[]);
-        setCurrentPage(page);
         setTotalPages(data.pagination_metadata.totalPages);
+        if (view === "samples" && !facetsCache.current) facetsCache.current = data as SpliceSearchResponse["data"]["assetsSearch"];
         if (view === "packs") {
-          data = readSearchResponse(await spliceSearch(JSON.stringify(createSearchRequest(""))));
+          if (!facetsCache.current) {
+            facetsCache.current = readSearchResponse(await cachedSearch(JSON.stringify(createSearchRequest(""))));
+          }
+          data = facetsCache.current;
         }
       }
       if (!isCurrent()) return;
@@ -376,11 +459,19 @@ function App() {
       }
 
       <div className="flex items-center justify-between gap-4 mb-2">
-        <h1 className="text-xl font-semibold">Ispliced</h1>
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1" aria-label="Navigation history">
+            <Button isIconOnly variant="outline" aria-label="Go back"
+              isDisabled={!navigation.current.canBack} onClick={() => navigateHistory(-1)}><ArrowLeft className="size-4" /></Button>
+            <Button isIconOnly variant="outline" aria-label="Go forward"
+              isDisabled={!navigation.current.canForward} onClick={() => navigateHistory(1)}><ArrowRight className="size-4" /></Button>
+          </div>
+          <h1 className="text-xl font-semibold">Ispliced</h1>
+        </div>
         <nav aria-label="Browse library" className="flex gap-2">
           <Button variant={view === "samples" ? "primary" : "outline"}
             aria-current={view === "samples" ? "page" : undefined}
-            onClick={() => { if (view === "samples") return; searchSequence.current++; pbCtx.cancellation?.(); setView("samples"); }}>Samples</Button>
+            onClick={() => { if (view === "samples") return; saveBrowseBeforeNavigation(); searchSequence.current++; pbCtx.cancellation?.(); setView("samples"); }}>Samples</Button>
           <Button variant={view === "packs" ? "primary" : "outline"}
             aria-current={view === "packs" ? "page" : undefined} onClick={showPacks}>Sample packs</Button>
         </nav>
@@ -445,7 +536,6 @@ function App() {
       </div>
 
       {view === "packs" && <p className="text-sm text-muted">Browse packs by name. Audio filters find packs containing matching samples.</p>}
-      {view === "packs" && searchLoading && searchProgress && <p role="status" className="text-sm text-muted">{searchProgress}</p>}
       <div className="flex gap-2">
         <Select aria-label="Instruments"
           selectionMode="multiple"
@@ -655,9 +745,11 @@ function App() {
         ? resultCount == 0
         ? <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-8">
             <img className="w-12 select-none" src="img/blob-think.png" alt="" draggable={false} />
-            <p className="text-muted">{searchLoading ? "Searching…" : "Couldn't find anything. Try changing your query and filters."}</p>
+            <p className="text-muted">{searchLoading ? "Searching…" : view === "packs" && filtersActive && currentPage < totalPages
+              ? "No matching packs yet. Load more packs to continue searching."
+              : "Couldn't find anything. Try changing your query and filters."}</p>
           </div>
-        : <div ref={resultContainer} aria-label={view === "packs" ? "Sample packs" : "Sample results"} aria-busy={searchLoading}
+        : <div ref={resultContainer} onScroll={rememberScroll} aria-label={view === "packs" ? "Sample packs" : "Sample results"} aria-busy={searchLoading}
             className="flex-1 min-h-0 mt-2 overflow-y-auto scrollbar-thin shadow-md bg-surface p-6 rounded-3xl flex flex-col gap-6"
         >
               <div className={`flex-1 ${view === "packs" ? "grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-5 content-start" : "flex flex-col"} transition-opacity duration-150
@@ -668,7 +760,7 @@ function App() {
               ) }
               </div>
 
-              { totalPages > 1 &&
+              { totalPages > 1 && !(view === "packs" && filtersActive) &&
                 <div className="w-full flex justify-center">
                   <Pagination>
                     <PaginationContent>
@@ -705,6 +797,11 @@ function App() {
               <p className="text-muted">Waiting for your command!</p>
             </div>
       }
+      {view === "packs" && filtersActive && searchError === null && currentPage < totalPages &&
+        <div className="flex justify-center items-center gap-3 py-2">
+          <p className="text-sm text-muted">{packs.length} packs found so far</p>
+          <Button variant="outline" isDisabled={searchLoading} onClick={() => setCurrentPage(page => page + 1)}>Load more packs</Button>
+        </div>}
     </main>
   );
 }

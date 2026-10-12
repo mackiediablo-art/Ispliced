@@ -97,3 +97,81 @@ test("packs share instrument, genre, key, tag, sample type and sorting controls"
   await page.getByRole("option", { name: "Most recent", exact: true }).click();
   await expect(cards.first()).toHaveAccessibleName("Open pack Velvet Keys & Chords");
 });
+
+test("navigation arrows restore pack searches, filters and sample views", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Go back" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Go forward" })).toBeDisabled();
+  await page.getByRole("button", { name: "Sample packs", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search for sample packs" }).fill("neon");
+  await expect(page.getByRole("button", { name: /^Open pack / })).toHaveCount(1);
+  await page.getByRole("button", { name: "BPM", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "BPM", exact: true }).fill("120");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("button", { name: "120 BPM", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: `Open pack ${neon}` }).click();
+  await expect(page.getByRole("button", { name: "Play sample" })).toHaveCount(3);
+  await page.getByRole("button", { name: "Go back" }).click();
+  await expect(page.getByRole("textbox", { name: "Search for sample packs" })).toHaveValue("neon");
+  await expect(page.getByRole("button", { name: "120 BPM", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Open pack / })).toHaveCount(1);
+  await page.getByRole("button", { name: "Go forward" }).click();
+  await expect(page.getByRole("button", { name: "Play sample" })).toHaveCount(3);
+  await expect(page.getByRole("textbox", { name: "Search for samples" })).toHaveValue("");
+});
+
+test("navigation arrows remember pagination; filtered packs load later matches on demand", async ({ page }) => {
+  // A small page size exercises pagination with the existing catalogue fixtures.
+  await page.route("**/src/dev/mock.ts*", async route => {
+    const response = await route.fetch();
+    const body = await response.text();
+    expect(body).toContain("const limit = variables.limit ?? 50;");
+    await route.fulfill({ response, body: body.replace("const limit = variables.limit ?? 50;", "const limit = 1;") });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Sample packs", exact: true }).click();
+  await expect(page.getByRole("button", { name: `Open pack ${neon}` })).toBeVisible();
+  await page.getByRole("button", { name: "2", exact: true }).click();
+  await expect(page.getByRole("button", { name: `Open pack ${drums}` })).toBeVisible();
+  await page.getByRole("button", { name: `Open pack ${drums}` }).click();
+  await expect(page.getByRole("button", { name: "Play sample" })).toHaveCount(1);
+  await page.getByRole("button", { name: "Go back" }).click();
+  await expect(page.getByRole("button", { name: `Open pack ${drums}` })).toBeVisible();
+  await expect(page.getByRole("button", { name: `Open pack ${neon}` })).toHaveCount(0);
+  await page.getByRole("button", { name: "Go back" }).click();
+  await expect(page.getByRole("button", { name: `Open pack ${neon}` })).toBeVisible();
+  await page.getByRole("button", { name: / Type$/ }).click();
+  await page.getByRole("option", { name: "Loops", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Open pack / })).toHaveCount(1);
+  await page.getByRole("button", { name: "Load more packs" }).click();
+  await expect(page.getByRole("button", { name: /^Open pack / })).toHaveCount(2);
+  await page.getByRole("button", { name: "Go back" }).click();
+  await expect(page.getByRole("button", { name: /^Open pack / })).toHaveCount(1);
+  await page.getByRole("button", { name: "Go forward" }).click();
+  await expect(page.getByRole("button", { name: /^Open pack / })).toHaveCount(2);
+});
+
+test("back restores the list scroll position after opening a pack", async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 480 });
+  await page.goto("/");
+  await page.getByRole("textbox", { name: "Search for samples" }).fill("_");
+  await expect(page.getByRole("button", { name: "Play sample" })).toHaveCount(10);
+  const list = page.getByLabel("Sample results", { exact: true });
+  await list.evaluate(element => { element.scrollTop = 120; });
+  await expect.poll(() => list.evaluate(element => element.scrollTop)).toBe(120);
+  await page.evaluate(() => {
+    document.addEventListener("click", () => {
+      const list = document.querySelector('[aria-label="Sample results"]')!;
+      sessionStorage.setItem("scrollBeforeOpening", String(list.scrollTop));
+    }, { capture: true, once: true });
+  });
+  // Clicking can scroll the chosen result into view; restore the actual position
+  // at navigation rather than the earlier programmatic scroll offset.
+  await page.getByRole("button", { name: "Show samples from Velvet Keys & Chords", exact: true }).first().click();
+  const savedScroll = await page.evaluate(() => Number(sessionStorage.getItem("scrollBeforeOpening")));
+  expect(savedScroll).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "Play sample" })).toHaveCount(3);
+  await page.getByRole("button", { name: "Go back" }).click();
+  await expect(page.getByRole("button", { name: "Play sample" })).toHaveCount(10);
+  await expect.poll(() => list.evaluate(element => element.scrollTop)).toBe(savedScroll);
+});

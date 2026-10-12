@@ -23,11 +23,21 @@ You only need to do this once.
 Choose **Sample packs** to browse pack artwork and search by pack name. The same
 instrument, genre, tag, key, BPM, sample type and sorting controls are available
 in both views. Audio filters show packs containing matching samples. Filtered
-pack searches scan all matching sample pages, so broad filters can take longer;
-changing the search cancels the remaining scan.
+pack searches show the first matching sample page immediately. **Load more
+packs** fetches the next page and adds newly discovered packs; duplicates are
+removed. Results and filters are cached for the current session, including when
+you change only the pack name. A message indicates when more pages remain even
+if no pack names match the samples loaded so far.
 
 Click a pack to open all its samples, with pagination for larger packs. **Back to
 packs** restores the search and filters used to find it.
+
+The back/forward arrows at the top restore the previous view, search, filters,
+pagination and scroll position. Starting a new search after going back replaces
+the forward history. History is kept for the current application session.
+
+Closing the main desktop window exits Ispliced, including its hidden Splice
+search webview, so it does not remain running in Task Manager.
 
 ## Development
 

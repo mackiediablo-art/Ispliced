@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createPackSearchRequest, createSearchRequest, SpliceSamplePack } from "../src/splice/api";
-import { findMatchingPacks, readSearchResponse } from "../src/splice/packs";
+import { findMatchingPacks, PackSearchCache, readSearchResponse } from "../src/splice/packs";
 import { mockSearch } from "../src/dev/mock";
 
 describe("pack search", () => {
@@ -13,41 +13,69 @@ describe("pack search", () => {
     expect(data.items.map(pack => pack.uuid)).toEqual(["pack-1"]);
   });
 
-  it("applies combined audio filters and deduplicates packs across sample pages", async () => {
+  it("returns the first page without scanning the catalogue", async () => {
+    const request = createPackSearchRequest("");
+    request.variables.asset_category_slug = "loop";
+    let calls = 0;
+    const result = await findMatchingPacks(request, async body => {
+      calls++;
+      const data = JSON.parse(mockSearch(body));
+      data.data.assetsSearch.pagination_metadata.totalPages = 100000;
+      return JSON.stringify(data);
+    }, () => true);
+    expect(calls).toBe(1);
+    expect(result?.items.length).toBeGreaterThan(0);
+    expect(result?.pagination_metadata.totalPages).toBe(100000);
+  });
+
+  it("applies combined audio filters and reuses cached sounds when the pack name changes", async () => {
     const request = createPackSearchRequest("neon");
-    request.variables.limit = 1; // Matching sounds span multiple pages in the same pack.
+    request.variables.limit = 1;
     request.variables.key = "C";
     request.variables.chord_type = "minor";
     request.variables.asset_category_slug = "loop";
     request.variables.min_bpm = 110;
     request.variables.max_bpm = 130;
-    request.variables.tags = ["tag-4"]; // synth
-    const packs = await findMatchingPacks(request, async body => mockSearch(body), () => true);
-    expect(packs.map(pack => pack.uuid)).toEqual(["pack-1"]);
-
-    delete request.variables.key;
-    delete request.variables.chord_type;
-    const pages: number[] = [];
-    const multiple = await findMatchingPacks(request, async body => {
-      const payload = JSON.parse(body);
-      pages.push(payload.variables.page);
-      expect(payload.variables.filepath).toBe("");
-      expect(payload.variables.query).toBeUndefined();
-      return mockSearch(body);
-    }, () => true);
-    expect(pages).toEqual([1, 2]);
-    expect(multiple.map(pack => pack.uuid)).toEqual(["pack-1"]);
+    request.variables.tags = ["tag-4"];
+    const cache: PackSearchCache = new Map();
+    let calls = 0;
+    const search = async (body: string) => { calls++; return mockSearch(body); };
+    expect((await findMatchingPacks(request, search, () => true, cache))?.items.map(pack => pack.uuid)).toEqual(["pack-1"]);
+    request.variables.query = "missing";
+    expect((await findMatchingPacks(request, search, () => true, cache))?.items).toEqual([]);
+    expect(calls).toBe(1);
   });
 
-  it("includes packs from later pages and supports exact BPM", async () => {
+  it("loads later pages on demand, deduplicates parents and restores earlier results from cache", async () => {
     const request = createPackSearchRequest("");
     request.variables.limit = 1;
     request.variables.asset_category_slug = "loop";
-    const packs = await findMatchingPacks(request, async body => mockSearch(body), () => true);
-    expect(packs.map(pack => pack.uuid).sort()).toEqual(["pack-1", "pack-2", "pack-3"]);
+    const cache: PackSearchCache = new Map();
+    const fetched: number[] = [];
+    const search = async (body: string) => {
+      fetched.push(JSON.parse(body).variables.page);
+      return mockSearch(body);
+    };
+    const first = await findMatchingPacks(request, search, () => true, cache);
+    expect(first?.items.map(pack => pack.uuid)).toEqual(["pack-1"]);
+    request.variables.page = 2;
+    const second = await findMatchingPacks(request, search, () => true, cache);
+    expect(second?.items.map(pack => pack.uuid)).toEqual(["pack-1", "pack-2"]);
+    request.variables.page = 6;
+    const all = await findMatchingPacks(request, search, () => true, cache);
+    expect(all?.items.map(pack => pack.uuid).sort()).toEqual(["pack-1", "pack-2", "pack-3"]);
+    request.variables.page = 1;
+    expect((await findMatchingPacks(request, search, () => true, cache))?.items).toEqual(first?.items);
+    expect(fetched).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("supports exact BPM and keeps different filters separate in cache", async () => {
+    const request = createPackSearchRequest("");
+    const cache: PackSearchCache = new Map();
     request.variables.bpm = "140";
-    expect((await findMatchingPacks(request, async body => mockSearch(body), () => true)).map(pack => pack.uuid))
-      .toEqual(["pack-2"]);
+    expect((await findMatchingPacks(request, async body => mockSearch(body), () => true, cache))?.items.map(pack => pack.uuid)).toEqual(["pack-2"]);
+    request.variables.bpm = "120";
+    expect((await findMatchingPacks(request, async body => mockSearch(body), () => true, cache))?.items.map(pack => pack.uuid)).toEqual(["pack-1"]);
   });
 
   it("opens a pack using its parent UUID with complete sample pagination", () => {
@@ -76,7 +104,7 @@ describe("pack search", () => {
       return mockSearch(body);
     }, () => current);
     expect(calls).toBe(1);
-    expect(result).toEqual([]);
+    expect(result).toBeNull();
   });
 
   it("reports GraphQL errors, including HTTP-success error responses", () => {
