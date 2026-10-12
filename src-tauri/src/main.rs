@@ -57,9 +57,27 @@ const SPLICE_HELPER_INIT: &str = r#"
     var event = getEventApi();
     if (!event) { setTimeout(start, 100); return; }
 
+    // The main window retransmits until the helper is ready. A slow request
+    // must not turn each retransmission into another concurrent GraphQL fetch.
+    var requests = new Map();
     event.listen("splice-search", async function (msg) {
       var id = msg.payload.id;
       var body = msg.payload.body;
+      if (requests.has(id)) {
+        var previous = requests.get(id);
+        if (previous) event.emit("splice-result", previous);
+        return;
+      }
+      requests.set(id, null);
+      function reply(payload) {
+        requests.set(id, payload);
+        if (requests.size > 64) {
+          for (var entry of requests) {
+            if (entry[1] !== null) { requests.delete(entry[0]); break; }
+          }
+        }
+        event.emit("splice-result", payload);
+      }
       var lastErr = null;
 
       // Cloudflare clearance can take a moment after the page loads, so retry
@@ -73,7 +91,7 @@ const SPLICE_HELPER_INIT: &str = r#"
           });
           var text = await resp.text();
           if (resp.ok) {
-            event.emit("splice-result", { id: id, ok: true, body: text });
+            reply({ id: id, ok: true, body: text });
             return;
           }
           lastErr = "Splice returned HTTP " + resp.status;
@@ -83,7 +101,7 @@ const SPLICE_HELPER_INIT: &str = r#"
         await new Promise(function (r) { setTimeout(r, 700); });
       }
 
-      event.emit("splice-result", { id: id, ok: false, error: lastErr || "unknown error" });
+      reply({ id: id, ok: false, error: lastErr || "unknown error" });
     });
   }
 
@@ -107,6 +125,15 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
+        .on_window_event(|window, event| {
+            // The hidden search webview must not keep the process alive after
+            // the user closes the main application window.
+            if window.label() == "main"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                window.app_handle().exit(0);
+            }
+        })
         .setup(|app| {
             // Create this before the frontend starts. The config loader and
             // writer can then safely access config.json through the fs plugin.

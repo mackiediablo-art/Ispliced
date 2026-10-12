@@ -9,31 +9,49 @@ export function readSearchResponse<T = SpliceSample>(raw: string): SpliceSearchR
   return response.data.assetsSearch;
 }
 
-/** Search every sample page so packs beyond the first 50 sounds aren't omitted.
- * Attribute filters describe the sounds inside a pack, not the pack itself.
- * The current-search guard stops pagination as soon as the user changes criteria.
+export type PackSearchPage = SpliceSearchResponse<SpliceSamplePack>["data"]["assetsSearch"];
+export type PackSearchCache = Map<string, Map<number, PackSearchPage>>;
+
+/** Fetch only the requested matching-sample page. Cache page chunks and combine
+ * their parent packs, so discovery is incremental, deduplicated and reversible.
+ * No catalogue-wide scan stands between a filter change and its first results.
  */
 export async function findMatchingPacks(
   request: SpliceSearchRequest,
   search: (body: string) => Promise<string>,
   isCurrent: () => boolean,
-  onProgress?: (page: number, totalPages: number) => void,
-): Promise<SpliceSamplePack[]> {
+  cache: PackSearchCache = new Map(),
+): Promise<PackSearchPage | null> {
   const samples = createSearchRequest("");
   samples.variables = { ...request.variables, filepath: "", query: undefined, page: 1 };
+  delete samples.variables.parent_asset_uuid;
+  delete samples.variables.parent_asset_type;
+  // Name filtering happens on parents. Changing just the pack name reuses sounds.
+  const key = JSON.stringify({ ...samples.variables, page: undefined });
+  let pages = cache.get(key);
+  if (!pages) {
+    pages = new Map();
+    cache.set(key, pages);
+    if (cache.size > 12) cache.delete(cache.keys().next().value!);
+  }
+  const requestedPage = Math.max(1, request.variables.page ?? 1);
+  let latest: PackSearchPage | undefined;
   const packs = new Map<string, SpliceSamplePack>();
-  let totalPages = 1;
-  for (let page = 1; page <= totalPages; page++) {
-    if (!isCurrent()) return [];
-    samples.variables.page = page;
-    const data = readSearchResponse(await search(JSON.stringify(samples)));
-    if (!isCurrent()) return [];
-    totalPages = data.pagination_metadata.totalPages;
-    onProgress?.(page, totalPages);
-    for (const sample of data.items) {
-      for (const pack of sample.parents.items) packs.set(pack.uuid, pack);
+  for (let page = 1; page <= requestedPage; page++) {
+    if (!isCurrent()) return null;
+    let chunk = pages.get(page);
+    if (!chunk) {
+      samples.variables.page = page;
+      const data = readSearchResponse(await search(JSON.stringify(samples)));
+      if (!isCurrent()) return null;
+      chunk = { ...data, items: data.items.flatMap(sample => sample.parents.items) };
+      pages.set(page, chunk);
     }
+    latest = chunk;
+    for (const pack of chunk.items) packs.set(pack.uuid, pack);
+    if (page >= chunk.pagination_metadata.totalPages) break;
   }
   const query = (request.variables.query ?? "").trim().toLowerCase();
-  return [...packs.values()].filter(pack => pack.name.toLowerCase().includes(query));
+  const items = [...packs.values()].filter(pack => pack.name.toLowerCase().includes(query));
+  return { ...latest!, items, response_metadata: { records: items.length } };
 }
