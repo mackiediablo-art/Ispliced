@@ -8,6 +8,8 @@ import { cfg } from "../config";
 import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createSearchRequest, createPackSearchRequest } from "../splice/api";
 import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
 
+import { downloadPack } from "../splice/downloadPack";
+import { savePackSample } from "../splice/saveSample";
 import { findMatchingPacks, PackSearchCache, readSearchResponse } from "../splice/packs";
 import { NavigationHistory } from "./history";
 import PackCard from "./components/PackCard";
@@ -145,6 +147,46 @@ function App() {
 
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+
+  const downloadBusy = useRef(false);
+  const [downloadingPackId, setDownloadingPackId] = useState<string | null>(null);
+  const [downloadNotice, setDownloadNotice] = useState<{
+    status: "accent" | "success" | "danger";
+    title: string;
+    description: string;
+  } | null>(null);
+
+  async function handleDownloadPack(pack: SpliceSamplePack) {
+    if (downloadBusy.current) return;
+    downloadBusy.current = true;
+    setDownloadingPackId(pack.uuid);
+    try {
+      if (!IN_TAURI) throw new Error("Pack downloads require the desktop application. Browser mode contains mock samples only.");
+      // Capture settings once so changing them mid-download cannot split a pack.
+      const { sampleDir, trimDelay } = cfg();
+      if (!sampleDir.trim() || !await checkDirExists(sampleDir)) {
+        settings.open();
+        throw new Error("Choose an existing sample folder in Settings before downloading a pack.");
+      }
+      setDownloadNotice({ status: "accent", title: "Downloading sample pack", description: pack.name });
+      const result = await downloadPack(pack, spliceSearch,
+        (sample, relativePath) => savePackSample(sample, relativePath, sampleDir, trimDelay),
+        progress => setDownloadNotice({ status: "accent", title: "Downloading sample pack",
+          description: `${pack.name} · ${progress.saved} saved of ${progress.found} found${progress.failed ? ` · ${progress.failed} failed` : ""}` }),
+      );
+      if (result.failed) {
+        throw new Error(`${result.saved} saved; ${result.failed} failed. Retry the pack to download again. ${result.errors.join("; ")}`);
+      }
+      setDownloadNotice({ status: "success", title: "Sample pack downloaded",
+        description: `${pack.name} · ${result.saved} samples saved to ${sampleDir}` });
+    } catch (error) {
+      setDownloadNotice({ status: "danger", title: "Sample pack download failed",
+        description: error instanceof Error ? error.message : String(error) });
+    } finally {
+      downloadBusy.current = false;
+      setDownloadingPackId(null);
+    }
+  }
 
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
 
@@ -477,6 +519,16 @@ function App() {
         </nav>
       </div>
 
+      {downloadNotice && <Alert status={downloadNotice.status} role="status" className="items-center">
+        <AlertIndicator />
+        <AlertContent>
+          <AlertTitle>{downloadNotice.title}</AlertTitle>
+          <AlertDescription>{downloadNotice.description}</AlertDescription>
+        </AlertContent>
+        {!downloadingPackId && <Button isIconOnly size="sm" variant="ghost" aria-label="Dismiss download notification"
+          onClick={() => setDownloadNotice(null)}><X className="size-4" /></Button>}
+      </Alert>}
+
       <div className="flex gap-2">
         <InputGroup className="flex-1">
           <InputGroupPrefix>
@@ -703,6 +755,10 @@ function App() {
             <span className="truncate font-medium">{packFilter.name}</span>
           </div>
 
+          <Button size="sm" variant="outline" isDisabled={downloadingPackId !== null}
+            onClick={() => void handleDownloadPack(packFilter)}>
+            {downloadingPackId === packFilter.uuid ? "Downloading…" : "Download whole pack"}
+          </Button>
           {packSearch.current && <Button size="sm" variant="outline" onClick={showPacks}>Back to packs</Button>}
           <button
             type="button"
@@ -755,7 +811,9 @@ function App() {
               <div className={`flex-1 ${view === "packs" ? "grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-5 content-start" : "flex flex-col"} transition-opacity duration-150
                               ${searchLoading ? "opacity-50 pointer-events-none" : ""}`}
               >
-              { view === "packs" ? packs.map(pack => <PackCard key={pack.uuid} pack={pack} onOpen={handlePackClick} />) : results.map(
+              { view === "packs" ? packs.map(pack => <PackCard key={pack.uuid} pack={pack} onOpen={handlePackClick}
+                  onDownload={pack => void handleDownloadPack(pack)} downloading={downloadingPackId === pack.uuid}
+                  downloadDisabled={downloadingPackId !== null} />) : results.map(
                 x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} onPackClick={handlePackClick} ctx={pbCtx}/>
               ) }
               </div>

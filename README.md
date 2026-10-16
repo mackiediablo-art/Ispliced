@@ -39,6 +39,23 @@ the forward history. History is kept for the current application session.
 Closing the main desktop window exits Ispliced, including its hidden Splice
 search webview, so it does not remain running in Task Manager.
 
+### Download a whole pack
+
+Choose **Download whole pack** on a pack card or inside an open pack. In the
+desktop app this saves every sample, across all pack pages, to a subfolder of
+the sample folder selected in Settings. Search filters do not limit the download.
+Exports use the same decoded preview audio as individual drag-and-drop exports,
+saved as 16-bit WAV with the configured MP3 delay trimming. Browser mock mode
+does not download audio.
+
+**Downloading sample pack** stays visible while files are being saved, including
+when you navigate to another view. **Sample pack downloaded** appears only after
+all files finish saving. A failed file or request produces an error notification;
+success is not reported for partial downloads. You can retry the pack; existing
+files at the same export paths are replaced. Only one whole-pack job runs at a
+time, with at most two samples downloading/converting concurrently. Keep the app
+open until the download completes.
+
 ## Development
 
 Install dependencies with `yarn install --frozen-lockfile`, then run `yarn dev`
