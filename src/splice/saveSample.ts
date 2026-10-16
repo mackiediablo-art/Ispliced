@@ -5,7 +5,7 @@ import { SpliceSample } from "./api";
 import { decodeSpliceAudio, getMp3SampleRate, MP3_START_DELAY } from "./decoder";
 import { IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../native";
 
-/** Save the same decoded, 16-bit WAV audio used by individual sample exports. */
+/** Save the same decoded, 24-bit WAV audio used by individual sample exports. */
 export async function savePackSample(sample: SpliceSample, relativePath: string, folder: string, trimDelay: boolean) {
   if (IS_WINDOWS && (await join(folder, relativePath)).length > WINDOWS_MAX_PATH) {
     throw new Error("The file path is too long. Choose a shorter sample folder in Settings.");
@@ -24,6 +24,6 @@ export async function savePackSample(sample: SpliceSample, relativePath: string,
   if (end <= start || !audio.numberOfChannels) throw new Error("The downloaded audio is empty.");
   const channels = Array.from({ length: audio.numberOfChannels }, (_, index) => audio.getChannelData(index).subarray(start, end));
   await writeSampleFile(folder, relativePath, wav.encode(channels as unknown as ArrayBuffer[], {
-    bitDepth: 16, sampleRate: audio.sampleRate,
+    bitDepth: 24, sampleRate: audio.sampleRate,
   }));
 }

@@ -250,7 +250,7 @@ export default function SampleListEntry(
         }
 
         await writeSampleFile(cfg().sampleDir, samplePath, wav.encode(channels as unknown as ArrayBuffer[], {
-          bitDepth: 16,
+          bitDepth: 24,
           sampleRate: samples.sampleRate
         }));
 

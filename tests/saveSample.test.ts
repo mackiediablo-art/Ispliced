@@ -25,10 +25,16 @@ beforeEach(() => {
   });
 });
 
-it("saves stereo PCM WAV using the selected delay-trimming setting", async () => {
+it("saves stereo 24-bit PCM WAV using the selected delay-trimming setting", async () => {
   await savePackSample(sample, "Pack/test.wav", "C:/Samples", true);
   const [folder, path, bytes] = mocks.write.mock.calls[0];
   expect([folder, path]).toEqual(["C:/Samples", "Pack/test.wav"]);
+  // Check the actual RIFF format chunk, not just encoder options.
+  expect(bytes.toString("ascii", 0, 4)).toBe("RIFF");
+  expect(bytes.toString("ascii", 12, 16)).toBe("fmt ");
+  expect(bytes.readUInt16LE(20)).toBe(1); // Integer PCM.
+  expect(bytes.readUInt16LE(34)).toBe(24);
+  expect(bytes.readUInt16LE(32)).toBe(6); // Stereo, three bytes per channel.
   const audio = wav.decode(bytes);
   expect(audio.sampleRate).toBe(44100);
   expect(audio.channelData).toHaveLength(2);

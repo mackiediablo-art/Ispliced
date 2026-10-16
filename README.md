@@ -53,8 +53,11 @@ These additions were made after cloning the original repository:
   helper requests are consolidated.
 - **Back/forward arrows:** restore the previous view, search, filters, pagination
   and scroll position. History lasts for the current application session.
+- **24-bit WAV exports:** individual sample drag-and-drop and whole-pack downloads
+  now export 24-bit PCM WAV files instead of 16-bit, retaining the decoded sample
+  rate and the configured MP3 delay trimming.
 - **Whole-pack downloads:** save every sample across every page of a pack as
-  16-bit WAV files under the configured sample folder, regardless of browse filters.
+  24-bit WAV files under the configured sample folder, regardless of browse filters.
 - **Persistent download notifications:** show **Downloading sample pack** while
   work is in progress and **Sample pack downloaded** only after every file has
   been saved. Progress remains visible while navigating between views; failed
@@ -92,7 +95,7 @@ browse history; starting a new search after going back replaces forward history.
 4. Wait for **Sample pack downloaded**, which confirms all samples have been saved.
 
 Files are saved in a pack subfolder. Exports use the same decoded preview audio
-as individual drag-and-drop exports, converted to 16-bit WAV with the configured
+as individual drag-and-drop exports, converted to 24-bit WAV with the configured
 MP3 delay trimming. They are not a download of the original source WAV masters.
 
 Only one whole-pack job runs at a time, with at most two audio downloads/conversions
